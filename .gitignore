@@ -1,0 +1,23 @@
+# Logs
+*.log
+debug.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Django
+db.sqlite3
+.env
+.env.local
+
+# Virtual environment
+venv/
+env/
+
+# Media
+media/
+
+# OS
+.DS_Store
+Thumbs.db
