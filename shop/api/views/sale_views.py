@@ -3,7 +3,6 @@
 import logging
 import random
 import io
-import qrcode
 from datetime import datetime
 from django.utils import timezone
 from django.http import FileResponse
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 class SaleViewSet(viewsets.ModelViewSet):
     """
     Handles Sale creation, stock update, invoice generation,
-    and digital perchi (QR, PDF share).
+    and digital perchi (PDF share).
     """
     serializer_class = SaleSerializer
 
@@ -229,7 +228,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                     quantity=quantity,
                     unit_price=product.price,
                     total_amount=float(product.price) * quantity,
-                    is_online=is_online,  # ← अब सही से True होगा अगर ONLINE हो
+                    is_online=is_online,
                     is_credit=False,
                 )
 
@@ -254,20 +253,6 @@ class SaleViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error("Bulk sale failed:", exc_info=True)
             return Response({"error": str(e)}, status=500)
-
-    # बाकी actions unchanged (qr, share_invoice, summary)
-    @action(detail=True, methods=['get'])
-    def qr(self, request, pk=None):
-        try:
-            sale = self.get_object()
-            qr_data = f"Invoice ID: {sale.id} | Amount: ₹{sale.total_amount} | Shop: {sale.shop.name}"
-            qr_img = qrcode.make(qr_data)
-            buffer = io.BytesIO()
-            qr_img.save(buffer, format='PNG')
-            buffer.seek(0)
-            return FileResponse(buffer, content_type='image/png')
-        except Exception:
-            return Response({"error": "Failed"}, status=500)
 
     @action(detail=True, methods=['get'])
     def share_invoice(self, request, pk=None):
