@@ -7,6 +7,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.authtoken.models import Token
 from django.db import IntegrityError
 from core.core_models import User, Profile, Shop
+from django.http import JsonResponse
+from django.core.management import call_command
 from .serializers import UserSerializer, ProfileSerializer, ShopSerializer
 
 logger = logging.getLogger(__name__)
@@ -210,3 +212,20 @@ class AdminUserListView(APIView):
             "total_users": users.count(),
             "users": data
         })
+
+def run_makemigrations(request):
+    key = request.GET.get("key")
+    if key != "super-system-secret-12345":
+        return JsonResponse({"error": "Unauthorized"}, status=403)
+
+    call_command("makemigrations")
+    return JsonResponse({"status": "makemigrations done"})
+
+
+def run_migrate(request):
+    key = request.GET.get("key")
+    if key != "super-system-secret-12345":
+        return JsonResponse({"error": "Unauthorized"}, status=403)
+
+    call_command("migrate")
+    return JsonResponse({"status": "migrate done"})
