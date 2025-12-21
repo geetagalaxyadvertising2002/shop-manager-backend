@@ -6,6 +6,7 @@ import io
 from datetime import datetime
 from django.utils import timezone
 from django.http import FileResponse
+from django.db import transaction
 from reportlab.pdfgen import canvas
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -22,13 +23,17 @@ logger = logging.getLogger(__name__)
 # ===================== SALE VIEWSET =====================
 class SaleViewSet(viewsets.ModelViewSet):
     """
-    Handles Sale creation, stock update, invoice generation,
-    and digital perchi (PDF share).
+    Handles:
+    - Single product sale
+    - Quick sale
+    - Bulk (multi-product) sale
+    - Invoice generation & PDF share
+    - Stock update (सिर्फ एक ही जगह!)
     """
     serializer_class = SaleSerializer
 
     def get_queryset(self):
-        """Fetch all sales for the logged-in user's shop"""
+        """User के shop की sales ही दिखाएं"""
         try:
             shop = Shop.objects.filter(owner=self.request.user).first()
             if not shop:
@@ -39,42 +44,46 @@ class SaleViewSet(viewsets.ModelViewSet):
             logger.error(f"Error fetching sales: {str(e)}", exc_info=True)
             return Sale.objects.none()
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         """
-        ✅ Create Sale + Auto Invoice + Stock Update
-        ✅ Return invoice info for Flutter frontend (Digital Perchi)
-        ✅ Now includes payment_type with case-insensitive handling
+        Single Product Sale
+        - Stock deduction सिर्फ यहाँ
+        - Invoice auto generate
+        - Payment type case-insensitive
         """
         try:
             serializer = self.get_serializer(data=request.data)
             serializer.is_valid(raise_exception=True)
-            shop = Shop.objects.filter(owner=request.user).first()
 
+            shop = Shop.objects.filter(owner=request.user).first()
             if not shop:
                 return Response(
-                    {"error": "No shop associated with this user. Please set up a shop first."},
+                    {"error": "No shop associated with this user."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # FIX: Case-insensitive & strip whitespace
-            payment_type_raw = request.data.get("payment_type", "Cash")
-            payment_type = str(payment_type_raw).strip().title()  # "online" → "Online", "ONLINE" → "Online"
-            is_online = (payment_type == "Online")
+            # Case-insensitive payment type
+            payment_type_raw = request.data.get("payment_type", "CASH").strip().upper()
+            ONLINE_TYPES = {'ONLINE', 'UPI', 'CARD', 'GPAY', 'PHONEPE', 'PAYTM', 'NETBANKING'}
+            is_online = payment_type_raw in ONLINE_TYPES
 
-            # Create Sale record
+            # Create Sale (serializer handles shop assignment)
             sale = serializer.save(shop=shop, is_online=is_online)
             product = sale.product
 
-            # Update product stock
-            if product.stock_quantity >= sale.quantity:
-                product.stock_quantity -= sale.quantity
-                product.save()
-            else:
-                return Response({"error": f"Not enough stock available for {product.name}"}, status=400)
+            # SINGLE PLACE: Stock update
+            if product.stock_quantity < sale.quantity:
+                raise ValueError(f"Not enough stock for {product.name}")
 
-            sale.sale_date = timezone.make_aware(datetime.now(), timezone.get_current_timezone())
+            product.stock_quantity -= sale.quantity
+            product.save()
+
+            # Set sale date
+            sale.sale_date = timezone.now()
             sale.save()
 
+            # Generate Invoice
             invoice_number = f"INV-{random.randint(10000, 99999)}"
             invoice = Invoice.objects.create(
                 shop=shop,
@@ -83,7 +92,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 is_online=is_online,
                 customer_name=getattr(sale.customer, "name", "Walk-in Customer"),
                 customer_phone=getattr(sale.customer, "phone_number", None),
-                note=f"Payment Type: {payment_type}",
+                note=f"Payment Type: {payment_type_raw}",
                 created_at=timezone.now()
             )
 
@@ -105,17 +114,16 @@ class SaleViewSet(viewsets.ModelViewSet):
                     "invoice_date": invoice.created_at.strftime("%Y-%m-%d %H:%M"),
                 },
                 "message": "Sale completed successfully!"
-            }, status=201)
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            logger.error("Error creating sale:", exc_info=True)
-            return Response({"error": str(e)}, status=500)
+            logger.error("Error creating single sale:", exc_info=True)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'], url_path='quick-sale')
+    @transaction.atomic
     def quick_sale(self, request):
-        """
-        ✅ Quick Sale — Auto Payment Type = Cash
-        """
+        """Quick Sale — हमेशा Cash (Offline)"""
         try:
             product_id = request.data.get('product_id')
             quantity = int(request.data.get('quantity', 1))
@@ -132,17 +140,22 @@ class SaleViewSet(viewsets.ModelViewSet):
             shop = product.shop
             total_amount = float(product.price) * quantity
 
+            # Create Sale
             sale = Sale.objects.create(
                 shop=shop,
                 product=product,
                 quantity=quantity,
                 unit_price=product.price,
                 total_amount=total_amount,
-                is_online=False  # Quick sale always cash/offline
+                is_online=False,
+                is_credit=False,
             )
+
+            # SINGLE PLACE: Stock deduction
             product.stock_quantity -= quantity
             product.save()
 
+            # Generate Invoice
             invoice_number = f"INV-{random.randint(10000, 99999)}"
             invoice = Invoice.objects.create(
                 shop=shop,
@@ -150,7 +163,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 total_amount=total_amount,
                 is_online=False,
                 customer_name="Walk-in Customer",
-                note="Payment Type: Cash",
+                note="Payment Type: CASH",
                 created_at=timezone.now()
             )
 
@@ -165,32 +178,36 @@ class SaleViewSet(viewsets.ModelViewSet):
                 "status": "success",
                 "invoice_number": invoice.invoice_number,
                 "total_amount": total_amount,
-                "message": "Sale completed successfully!"
-            }, status=201)
+                "message": "Quick sale completed!"
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             logger.error("Quick sale failed:", exc_info=True)
             return Response({"error": str(e)}, status=500)
 
     @action(detail=False, methods=['post'], url_path='bulk-sale')
+    @transaction.atomic
     def bulk_sale(self, request):
         """
-        ✅ Multi-product invoice + Stock Update
-        ✅ Includes payment_type with case-insensitive handling
+        Multi-product Sale (Bulk)
+        - Stock deduction सिर्फ एक जगह
+        - Payment type case-insensitive
+        - Full rollback on error
         """
         try:
             items = request.data.get('items', [])
-            payment_type_raw = request.data.get("payment_type", "Cash")
-            payment_type = str(payment_type_raw).strip().title()  # ← FIX: "ONLINE" → "Online"
-            is_online = (payment_type == "Online")
-
             if not items:
                 return Response({"error": "No items provided"}, status=400)
 
+            payment_type_raw = request.data.get("payment_type", "CASH").strip().upper()
+            ONLINE_TYPES = {'ONLINE', 'UPI', 'CARD', 'GPAY', 'PHONEPE', 'PAYTM', 'NETBANKING'}
+            is_online = payment_type_raw in ONLINE_TYPES
+
             total_amount = 0.0
             shop = None
+            products_to_update = []
 
-            # Validate items and calculate total
+            # First Pass: Validation + Calculate total
             for item in items:
                 product_id = item.get('product_id')
                 quantity = int(item.get('quantity', 1))
@@ -203,7 +220,11 @@ class SaleViewSet(viewsets.ModelViewSet):
 
                 if shop is None:
                     shop = product.shop
+                elif shop != product.shop:
+                    return Response({"error": "All products must belong to the same shop"}, status=400)
+
                 total_amount += float(product.price) * quantity
+                products_to_update.append((product, quantity))
 
             # Create Invoice
             invoice_number = f"INV-{random.randint(10000, 99999)}"
@@ -213,15 +234,12 @@ class SaleViewSet(viewsets.ModelViewSet):
                 total_amount=total_amount,
                 is_online=is_online,
                 customer_name="Walk-in Customer",
-                note=f"Payment Type: {payment_type}",
+                note=f"Payment Type: {payment_type_raw}",
                 created_at=timezone.now()
             )
 
-            # Create Sale entries and update stock
-            for item in items:
-                product = Product.objects.get(id=item['product_id'])
-                quantity = int(item['quantity'])
-
+            # Second Pass: Create Sales + Update Stock + Invoice Items
+            for product, quantity in products_to_update:
                 Sale.objects.create(
                     shop=shop,
                     product=product,
@@ -239,6 +257,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                     unit_price=product.price
                 )
 
+                # SINGLE PLACE: Stock deduction
                 product.stock_quantity -= quantity
                 product.save()
 
@@ -246,9 +265,9 @@ class SaleViewSet(viewsets.ModelViewSet):
                 "status": "success",
                 "invoice_number": invoice.invoice_number,
                 "total_amount": total_amount,
-                "message": "Invoice generated successfully!",
-                "payment_type": payment_type
-            })
+                "message": "Bulk sale completed successfully!",
+                "payment_type": payment_type_raw
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             logger.error("Bulk sale failed:", exc_info=True)
@@ -256,9 +275,17 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def share_invoice(self, request, pk=None):
+        """PDF Invoice Download"""
         try:
             sale = self.get_object()
-            invoice = Invoice.objects.filter(shop=sale.shop, total_amount=sale.total_amount).first()
+            invoice = Invoice.objects.filter(
+                shop=sale.shop,
+                total_amount=sale.total_amount
+            ).first()
+
+            if not invoice:
+                return Response({"error": "Invoice not found"}, status=404)
+
             buffer = io.BytesIO()
             p = canvas.Canvas(buffer)
             p.drawString(100, 780, f"Invoice: {invoice.invoice_number}")
@@ -267,26 +294,35 @@ class SaleViewSet(viewsets.ModelViewSet):
             p.showPage()
             p.save()
             buffer.seek(0)
-            return FileResponse(buffer, as_attachment=True,
-                                filename=f"Invoice_{invoice.invoice_number}.pdf")
-        except Exception:
+
+            return FileResponse(
+                buffer,
+                as_attachment=True,
+                filename=f"Invoice_{invoice.invoice_number}.pdf"
+            )
+        except Exception as e:
+            logger.error("PDF generation failed:", exc_info=True)
             return Response({"error": "Failed to create PDF"}, status=500)
 
     @action(detail=False, methods=['get'])
     def summary(self, request):
+        """Today की sales summary"""
         try:
             shop = Shop.objects.filter(owner=request.user).first()
             if not shop:
                 return Response({"error": "Shop not found"}, status=404)
+
             today = timezone.now().date()
             sales = Sale.objects.filter(shop=shop, sale_date__date=today)
+
             return Response({
-                "total_sales": sum([s.total_amount for s in sales]),
-                "total_items": sum([s.quantity for s in sales]),
+                "total_sales": sum(s.total_amount for s in sales),
+                "total_items": sum(s.quantity for s in sales),
                 "count": sales.count(),
             })
-        except Exception:
-            return Response({"error": "Failed"}, status=500)
+        except Exception as e:
+            logger.error("Sale summary failed:", exc_info=True)
+            return Response({"error": "Failed to fetch summary"}, status=500)
 
 
 # ===================== PENDING SALE VIEWSET =====================
@@ -299,15 +335,24 @@ class PendingSaleViewSet(viewsets.ModelViewSet):
             return PendingSale.objects.none()
         return PendingSale.objects.filter(shop=shop).order_by('-created_at')
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
+        """Pending Sale (स्टॉक अभी नहीं कटेगा)"""
         try:
             serializer = self.get_serializer(data=request.data)
             serializer.is_valid(raise_exception=True)
+
             shop = Shop.objects.filter(owner=request.user).first()
+            if not shop:
+                return Response({"error": "No shop found"}, status=400)
+
             pending_sale = serializer.save(shop=shop)
+
             return Response({
                 "status": "success",
                 "sale_id": pending_sale.id,
-            }, status=201)
+                "message": "Pending sale created"
+            }, status=status.HTTP_201_CREATED)
         except Exception as e:
+            logger.error("Pending sale creation failed:", exc_info=True)
             return Response({"error": str(e)}, status=500)

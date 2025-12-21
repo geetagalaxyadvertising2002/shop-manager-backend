@@ -1,8 +1,10 @@
 # shop/api/serializers/sale_bill_serializer.py
+
 from rest_framework import serializers
 from shop.models.sale_bill import SaleBill, SaleBillItem
 from shop.models import Product
 from customers.models import Customer
+
 
 class SaleBillItemSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(write_only=True)
@@ -31,28 +33,34 @@ class SaleBillSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
-        customer = validated_data.pop('customer')  # This is Customer object
-        shop = validated_data.pop('shop')  # From view
+        customer = validated_data.pop('customer')  # Customer object
+        shop = validated_data.pop('shop')        # Passed from view
 
+        # Create SaleBill (without touching stock)
         sale_bill = SaleBill.objects.create(
             shop=shop,
             customer=customer,
             **validated_data
         )
 
+        # Create SaleBillItems (only validation, NO stock update here)
         for item_data in items_data:
             product_id = item_data.pop('product_id')
             product = Product.objects.get(id=product_id)
 
+            # Only check stock availability
             if product.stock_quantity < item_data['quantity']:
-                raise serializers.ValidationError(f"Not enough stock for {product.name}")
+                raise serializers.ValidationError(
+                    f"Not enough stock for {product.name}. Available: {product.stock_quantity}"
+                )
 
             SaleBillItem.objects.create(
                 sale_bill=sale_bill,
                 product=product,
                 **item_data
             )
-            product.stock_quantity -= item_data['quantity']
-            product.save()
+
+            # STOCK UPDATE REMOVED FROM HERE
+            # यह काम अब View में एक ही जगह होगा
 
         return sale_bill

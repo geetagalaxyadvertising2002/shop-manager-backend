@@ -151,7 +151,7 @@ class ShopViewSet(viewsets.ModelViewSet):
 
             shop.is_live = True
             shop.save()
-            public_url = f'https://corestore.com/shop/{shop.slug}'
+            public_url = f'https://corestore.netlify.app/shop.html?slug={shop.slug}'
 
             logger.info(f"Shop published: {shop.name} - {public_url}")
             return Response({
