@@ -61,10 +61,7 @@ class SaleBillViewSet(viewsets.ModelViewSet):
             # Final stock check & deduction (only here!)
             if product.stock_quantity < item.quantity:
                 raise Exception(f"Insufficient stock for {product.name}")
-
-            product.stock_quantity -= item.quantity
-            product.save()
-
+                
             # Create Sale record for reporting (online/offline tracking)
             Sale.objects.create(
                 shop=shop,
