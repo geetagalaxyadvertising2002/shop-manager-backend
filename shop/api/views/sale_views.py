@@ -258,8 +258,6 @@ class SaleViewSet(viewsets.ModelViewSet):
                 )
 
                 # SINGLE PLACE: Stock deduction
-                product.stock_quantity -= quantity
-                product.save()
 
             return Response({
                 "status": "success",
