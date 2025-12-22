@@ -24,6 +24,33 @@ class SaleBillViewSet(viewsets.ModelViewSet):
             return SaleBill.objects.none()
         return SaleBill.objects.filter(shop=shop).order_by('-created_at')
 
+    @action(detail=False, methods=['get'], url_path='by-bill-number')
+    def get_by_bill_number(self, request):
+        """
+        New Endpoint: GET /api/sales/bills/by-bill-number/?bill_number=BILL-123
+        Returns full SaleBill details including nested customer if exists
+        """
+        bill_number = request.query_params.get('bill_number')
+        if not bill_number:
+            return Response(
+                {"error": "bill_number parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            bill = SaleBill.objects.select_related('customer').get(
+                shop=request.user.shop_set.first(),
+                bill_number=bill_number
+            )
+        except SaleBill.DoesNotExist:
+            return Response(
+                {"error": "Sale bill not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = self.get_serializer(bill)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     @transaction.atomic
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
