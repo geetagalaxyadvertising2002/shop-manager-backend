@@ -35,6 +35,12 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at', 'updated_at']
 
+    def validate_barcode(self, value):
+        if not value:
+          return None
+        return value
+
+
     def to_representation(self, instance):
         """
         Ensure image_url always returns the current value from DB

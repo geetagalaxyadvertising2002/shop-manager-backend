@@ -1,6 +1,7 @@
 from django.db import models
 from core.core_models import Shop
 from datetime import date
+import uuid
 from django.utils import timezone
 
 
@@ -21,32 +22,33 @@ class Product(models.Model):
     name = models.CharField(max_length=200)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     stock_quantity = models.IntegerField(default=0)
+
     barcode = models.CharField(
         max_length=100,
         unique=True,
-        blank=True,
         null=True,
-        default=None  # optional, but good practice
+        blank=True
     )
-    
-    # OLD: Local file storage (ab use nahi hoga)
-    # image = models.ImageField(upload_to='products/', null=True, blank=True)
-    
-    # NEW: Firebase se aaya URL store karenge
+
     image_url = models.URLField(max_length=500, blank=True, null=True)
-    
     description = models.TextField(blank=True, null=True)
     show_on_website = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def __str__(self):
-        return self.name
+    def save(self, *args, **kwargs):
+        # ✅ AUTO GENERATE BARCODE
+        if not self.barcode:
+            self.barcode = self.generate_unique_barcode()
+        super().save(*args, **kwargs)
 
-    # Yeh property frontend ko hamesha sahi image dega
-    @property
-    def display_image(self):
-        return self.image_url or ''  # agar image_url nahi toh empty string
+    @staticmethod
+    def generate_unique_barcode():
+        while True:
+            code = f"PRD-{uuid.uuid4().hex[:8].upper()}"
+            if not Product.objects.filter(barcode=code).exists():
+                return code
+
 
 
 # ===================== INVOICE MODEL =====================
