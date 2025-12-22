@@ -9,6 +9,10 @@ router.register(r'categories', CategoryViewSet, basename='category')
 router.register(r'invoices', InvoiceViewSet, basename='invoice')
 router.register(r'cashbook', CashbookViewSet, basename='cashbook')
 
-urlpatterns = [
-    path('', include(router.urls)),
+urlpatterns += [
+    path(
+        'sales/bills/by-bill-number/',
+        SaleBillViewSet.as_view({'get': 'get_by_bill_number'}),
+        name='sale-bill-by-number'
+    ),
 ]

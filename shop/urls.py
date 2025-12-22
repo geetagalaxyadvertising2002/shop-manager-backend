@@ -27,5 +27,4 @@ urlpatterns = [
 
     # ✅ यहाँ नया endpoint add करो
     path('shops/my-shop/', my_current_shop, name='my-shop'),
-    path('sales/bills/by-bill-number/', SaleBillViewSet.as_view({'get': 'get_by_bill_number'}), name='sale-bill-by-number'),
 ]
