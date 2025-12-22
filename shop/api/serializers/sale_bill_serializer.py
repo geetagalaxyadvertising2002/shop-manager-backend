@@ -31,7 +31,7 @@ class SaleBillItemSerializer(serializers.ModelSerializer):
 class SaleBillSerializer(serializers.ModelSerializer):
     items = SaleBillItemSerializer(many=True)
     customer_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
-    customer = SimpleCustomerSerializer(read_only=True)  # ← List & detail mein include
+    customer = SimpleCustomerSerializer(read_only=True)  # Detail + List दोनों में दिखेगा
 
     class Meta:
         model = SaleBill
@@ -98,16 +98,21 @@ class SaleBillSerializer(serializers.ModelSerializer):
         return sale_bill
 
     def to_representation(self, instance):
+        """
+        Ensure that both 'items' and 'customer' are always populated
+        in BOTH detail and list views.
+        """
         ret = super().to_representation(instance)
-        
-        # List view mein bhi nested customer & items force populate
-        if 'items' not in ret or not ret['items']:
-            ret['items'] = SaleBillItemSerializer(
-                instance.items.select_related('product').all(),
-                many=True
-            ).data
 
-        if instance.customer and ('customer' not in ret or not ret['customer']):
+        # Force populate items (list view में भी full nested product data आएगा)
+        items_qs = instance.items.select_related('product').all()
+        ret['items'] = SaleBillItemSerializer(items_qs, many=True).data
+
+        # Force populate customer if exists
+        if instance.customer:
             ret['customer'] = SimpleCustomerSerializer(instance.customer).data
+        else:
+            # Optional: अगर customer नहीं है तो explicitly null रखो (fallback avoid करने के लिए)
+            ret['customer'] = None
 
         return ret
