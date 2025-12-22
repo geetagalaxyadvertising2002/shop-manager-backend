@@ -29,7 +29,7 @@ class SaleBillItemSerializer(serializers.ModelSerializer):
 
 
 class SaleBillSerializer(serializers.ModelSerializer):
-    items = SaleBillItemSerializer(many=True)
+    items = SaleBillItemSerializer(many=True, required=True)
     customer_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     customer = SimpleCustomerSerializer(read_only=True)  # Detail + List दोनों में दिखेगा
 
@@ -40,7 +40,7 @@ class SaleBillSerializer(serializers.ModelSerializer):
             'subtotal', 'additional_charges', 'total_amount',
             'payment_type', 'paid_amount', 'balance_due', 'items', 'created_at'
         ]
-        read_only_fields = ['created_at']
+        read_only_fields = ['id', 'created_at']
 
     def validate(self, data):
         items_data = data.get('items', [])
@@ -66,6 +66,12 @@ class SaleBillSerializer(serializers.ModelSerializer):
                     "items": f"Insufficient stock for {product.name}. Available: {product.stock_quantity}, Requested: {quantity}"
                 })
 
+        # Optional: Validate payment_type if needed
+        payment_type = data.get('payment_type', 'CASH').upper()
+        valid_types = ['CASH', 'ONLINE', 'UPI', 'CARD', 'UNPAID']
+        if payment_type not in valid_types:
+            raise serializers.ValidationError({"payment_type": f"Invalid payment type. Allowed: {valid_types}"})
+
         return data
 
     def create(self, validated_data):
@@ -74,28 +80,67 @@ class SaleBillSerializer(serializers.ModelSerializer):
         shop = validated_data.pop('shop')
 
         customer = None
-        if customer_id:
+        if customer_id is not None:  # Handle None explicitly
             try:
                 customer = Customer.objects.get(id=customer_id)
             except Customer.DoesNotExist:
-                raise serializers.ValidationError("Invalid customer_id")
+                raise serializers.ValidationError({"customer_id": "Invalid customer ID"})
 
+        # Create SaleBill
         sale_bill = SaleBill.objects.create(
             shop=shop,
             customer=customer,
             **validated_data
         )
 
+        # Create items and deduct stock (with transaction safety)
         for item_data in items_data:
             product_id = item_data.pop('product_id')
             product = Product.objects.get(id=product_id)
+            quantity = item_data['quantity']
+
+            # Deduct stock atomically
+            if product.stock_quantity < quantity:
+                raise serializers.ValidationError(f"Insufficient stock for {product.name}")
+
             SaleBillItem.objects.create(
                 sale_bill=sale_bill,
                 product=product,
                 **item_data
             )
 
+            # Update stock (deduct)
+            product.stock_quantity -= quantity
+            product.save(update_fields=['stock_quantity'])
+
         return sale_bill
+
+    def update(self, instance, validated_data):
+        # Handle update (if needed, e.g., partial updates)
+        items_data = validated_data.pop('items', None)
+        customer_id = validated_data.pop('customer_id', None)
+        shop = validated_data.pop('shop', None)
+
+        if customer_id is not None:
+            try:
+                instance.customer = Customer.objects.get(id=customer_id)
+            except Customer.DoesNotExist:
+                raise serializers.ValidationError({"customer_id": "Invalid customer ID"})
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.save()
+
+        # If items provided, replace (delete old and create new)
+        if items_data is not None:
+            instance.items.all().delete()
+            for item_data in items_data:
+                product_id = item_data.pop('product_id')
+                product = Product.objects.get(id=product_id)
+                SaleBillItem.objects.create(sale_bill=instance, product=product, **item_data)
+
+        return instance
 
     def to_representation(self, instance):
         """
@@ -104,15 +149,14 @@ class SaleBillSerializer(serializers.ModelSerializer):
         """
         ret = super().to_representation(instance)
 
-        # Force populate items (list view में भी full nested product data आएगा)
+        # Force populate items with full details
         items_qs = instance.items.select_related('product').all()
         ret['items'] = SaleBillItemSerializer(items_qs, many=True).data
 
-        # Force populate customer if exists
+        # Force populate customer
         if instance.customer:
             ret['customer'] = SimpleCustomerSerializer(instance.customer).data
         else:
-            # Optional: अगर customer नहीं है तो explicitly null रखो (fallback avoid करने के लिए)
-            ret['customer'] = None
+            ret['customer'] = None  # Explicit null for clarity
 
         return ret
