@@ -6,14 +6,13 @@ from shop.models import Product
 from customers.models import Customer
 
 
-# Simple Product Serializer for nested display (list/detail views)
+# Nested serializers for display only
 class SimpleProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = ['id', 'name', 'price']
 
 
-# Simple Customer Serializer for nested display
 class SimpleCustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
@@ -21,29 +20,18 @@ class SimpleCustomerSerializer(serializers.ModelSerializer):
 
 
 class SaleBillItemSerializer(serializers.ModelSerializer):
-    product_id = serializers.IntegerField(write_only=True, required=True)
-    product = SimpleProductSerializer(read_only=True)  # Nested for display only
+    product_id = serializers.IntegerField(write_only=True)
+    product = SimpleProductSerializer(read_only=True)
 
     class Meta:
         model = SaleBillItem
-        fields = ['id', 'product_id', 'product', 'quantity', 'unit_price']
-
-    def validate_product_id(self, value):
-        try:
-            product = Product.objects.get(id=value)
-            if product.stock_quantity < self.initial_data.get('quantity', 0):
-                raise serializers.ValidationError(
-                    f"Insufficient stock for {product.name}. Available: {product.stock_quantity}"
-                )
-            return value
-        except Product.DoesNotExist:
-            raise serializers.ValidationError("Product not found")
+        fields = ['product_id', 'product', 'quantity', 'unit_price']
 
 
 class SaleBillSerializer(serializers.ModelSerializer):
-    items = SaleBillItemSerializer(many=True)  # Works for both create & display
+    items = SaleBillItemSerializer(many=True)
     customer_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
-    customer = SimpleCustomerSerializer(read_only=True)  # Nested for display only
+    customer = SimpleCustomerSerializer(read_only=True)
 
     class Meta:
         model = SaleBill
@@ -52,29 +40,58 @@ class SaleBillSerializer(serializers.ModelSerializer):
             'subtotal', 'additional_charges', 'total_amount',
             'payment_type', 'paid_amount', 'balance_due', 'items', 'created_at'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['created_at']
+
+    def validate(self, data):
+        """
+        Full validation at parent level - safe access to quantity & product_id
+        """
+        items_data = data.get('items', [])
+        if not items_data:
+            raise serializers.ValidationError({"items": "At least one item is required."})
+
+        for item in items_data:
+            product_id = item.get('product_id')
+            quantity = item.get('quantity', 0)
+
+            if not product_id:
+                raise serializers.ValidationError({"items": "product_id is required for each item."})
+
+            if quantity <= 0:
+                raise serializers.ValidationError({"items": "Quantity must be greater than 0."})
+
+            try:
+                product = Product.objects.get(id=product_id)
+            except Product.DoesNotExist:
+                raise serializers.ValidationError({"items": f"Product with id {product_id} not found."})
+
+            if product.stock_quantity < quantity:
+                raise serializers.ValidationError({
+                    "items": f"Insufficient stock for {product.name}. Available: {product.stock_quantity}, Requested: {quantity}"
+                })
+
+        return data
 
     def create(self, validated_data):
-        # Extract nested data
-        items_data = validated_data.pop('items', [])
+        items_data = validated_data.pop('items')
         customer_id = validated_data.pop('customer_id', None)
-        shop = validated_data.pop('shop', None)  # From view
+        shop = validated_data.pop('shop')
 
-        if not shop:
-            raise serializers.ValidationError("Shop is required")
-
-        # Get customer if provided
         customer = None
         if customer_id:
             try:
                 customer = Customer.objects.get(id=customer_id)
             except Customer.DoesNotExist:
-                raise serializers.ValidationError("Customer not found")
+                raise serializers.ValidationError("Invalid customer_id")
 
         # Create SaleBill
-        sale_bill = SaleBill.objects.create(shop=shop, customer=customer, **validated_data)
+        sale_bill = SaleBill.objects.create(
+            shop=shop,
+            customer=customer,
+            **validated_data
+        )
 
-        # Create items (stock check already done in validate_product_id)
+        # Create items
         for item_data in items_data:
             product_id = item_data.pop('product_id')
             product = Product.objects.get(id=product_id)
@@ -87,20 +104,17 @@ class SaleBillSerializer(serializers.ModelSerializer):
         return sale_bill
 
     def to_representation(self, instance):
-        # Ensure nested data is always included (for billing history list view)
-        data = super().to_representation(instance)
+        ret = super().to_representation(instance)
         
-        # Force-load items if empty (for list view)
-        if not data.get('items'):
-            data['items'] = SaleBillItemSerializer(
-                instance.items.select_related('product').all(), 
-                many=True,
-                context=self.context
+        # Ensure items are populated in list view
+        if not ret.get('items'):
+            ret['items'] = SaleBillItemSerializer(
+                instance.items.select_related('product').all(),
+                many=True
             ).data
-            
-        # Force-load customer if empty
-        if instance.customer_id and not data.get('customer'):
-            customer = Customer.objects.get(id=instance.customer_id)
-            data['customer'] = SimpleCustomerSerializer(customer, context=self.context).data
-        
-        return data
+
+        # Ensure customer is populated
+        if instance.customer and not ret.get('customer'):
+            ret['customer'] = SimpleCustomerSerializer(instance.customer).data
+
+        return ret
