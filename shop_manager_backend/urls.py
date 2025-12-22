@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from core.views import run_makemigrations, run_migrate
+from core.views import run_makemigrations, run_migrate, HealthCheckView
 
 # Optional: keep alias import for reports (not required but clean)
 from reports import urls as report_urls
@@ -20,6 +20,8 @@ urlpatterns = [
     path('api/core/', include('core.urls')),
     path("api/system/makemigrations/", run_makemigrations),
     path("api/system/migrate/", run_migrate),
+    path("health/", HealthCheckView.as_view()),
+
 
     # -------------------------
     # 👥 Customers / Parties

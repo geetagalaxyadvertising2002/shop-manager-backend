@@ -26,7 +26,8 @@ class RegisterView(APIView):
                 return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
             user = serializer.save()
-            Profile.objects.create(user=user, phone_number=request.data.get('phone_number', ''))
+            Profile.objects.create(user=use
+            r, phone_number=request.data.get('phone_number', ''))
             token, _ = Token.objects.get_or_create(user=user)
 
             logger.info(f"User registered: {user.username}")
@@ -229,3 +230,13 @@ def run_migrate(request):
 
     call_command("migrate")
     return JsonResponse({"status": "migrate done"})
+
+# ✅ HEALTH CHECK API
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            "status": "ok",
+            "message": "Server is healthy 🚀"
+        }, status=status.HTTP_200_OK)
