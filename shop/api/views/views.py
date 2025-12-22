@@ -161,7 +161,7 @@ class ProductViewSet(viewsets.ModelViewSet):
                 name=row.get('Name'),
                 price=row.get('Price') or 0,
                 stock_quantity=row.get('Stock') or 0,
-                barcode=row.get('Barcode') or ""
+                barcode=row.get('Barcode') or None
             )
             created += 1
 
