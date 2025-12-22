@@ -21,7 +21,13 @@ class Product(models.Model):
     name = models.CharField(max_length=200)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     stock_quantity = models.IntegerField(default=0)
-    barcode = models.CharField(max_length=100, unique=True, blank=True, null=True)
+    barcode = models.CharField(
+        max_length=100,
+        unique=True,
+        blank=True,
+        null=True,
+        default=None  # optional, but good practice
+    )
     
     # OLD: Local file storage (ab use nahi hoga)
     # image = models.ImageField(upload_to='products/', null=True, blank=True)
