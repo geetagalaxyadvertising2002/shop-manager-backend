@@ -26,13 +26,6 @@ class SaleBillViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        """
-        SaleBill creation with:
-        - Safe stock deduction (only once)
-        - Sale entries for accurate online/offline reports
-        - Full atomic transaction (rollback if anything fails)
-        - Proper customer assignment via serializer
-        """
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -44,7 +37,7 @@ class SaleBillViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Case-insensitive payment type handling
+        # Payment type logic
         payment_type_raw = request.data.get('payment_type', 'CASH').strip().upper()
         ONLINE_PAYMENT_TYPES = {
             'ONLINE', 'UPI', 'CARD', 'GPAY', 'PHONEPE', 'PAYTM', 'NETBANKING'
@@ -52,27 +45,23 @@ class SaleBillViewSet(viewsets.ModelViewSet):
         is_online = payment_type_raw in ONLINE_PAYMENT_TYPES
         is_credit = payment_type_raw == 'UNPAID'
 
-        # 🔥 KEY FIX: serializer को shop pass करो ताकि serializer.create() में use हो
-        # अब serializer खुद customer_id से customer assign कर देगा
+        # 🔥 यहाँ fix है — serializer को shop pass करो
         serializer.validated_data['shop'] = shop
 
-        # 🔥 अब save करो — customer भी सही assign हो जाएगा
+        # 🔥 अब save करो — serializer का create() method चलेगा और customer assign होगा
         sale_bill = serializer.save()
 
-        # SINGLE PLACE: Stock check + deduction + Create Sale entries
+        # Stock check & Sale entries
         for item in sale_bill.items.all():
             product = item.product
 
-            # Final stock check (deduction serializer में नहीं हुई है, इसलिए यहाँ करो)
             if product.stock_quantity < item.quantity:
                 raise Exception(f"Insufficient stock for {product.name}")
 
-            # Stock deduct करो (अगर तुम्हारा Product model में stock update logic है)
-            # Note: अगर तुम stock manually deduct करना चाहते हो तो यहाँ करो
+            # Optional: stock deduct यहाँ करो अगर model में auto नहीं होता
             # product.stock_quantity -= item.quantity
             # product.save()
 
-            # Create Sale record for reporting (online/offline tracking)
             Sale.objects.create(
                 shop=shop,
                 product=product,
@@ -81,33 +70,23 @@ class SaleBillViewSet(viewsets.ModelViewSet):
                 total_amount=item.quantity * item.unit_price,
                 is_online=is_online,
                 is_credit=is_credit,
-                customer=sale_bill.customer,  # अब यहाँ customer सही होगा!
+                customer=sale_bill.customer,  # अब यह None नहीं होगा
                 sale_date=sale_bill.bill_date or timezone.now(),
             )
 
-        # Success response
+        # Response
         response_data = serializer.data
         response_data['message'] = 'Sale bill created successfully'
         response_data['is_online'] = is_online
-
-        if hasattr(sale_bill, 'bill_number'):
-            response_data['bill_number'] = sale_bill.bill_number
 
         return Response(response_data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'], url_path='items')
     def get_items(self, request, pk=None):
-        """
-        Get all items of a SaleBill (used for Sale Return)
-        Example: GET /api/sales/bills/10/items/
-        """
         try:
             bill = self.get_object()
         except Exception:
-            return Response(
-                {"error": "Sale Bill not found"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "Sale Bill not found"}, status=status.HTTP_404_NOT_FOUND)
 
         items = bill.items.all()
         data = [
