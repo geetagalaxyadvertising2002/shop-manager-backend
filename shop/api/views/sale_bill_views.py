@@ -1,113 +1,113 @@
-# shop/api/serializers/sale_bill_serializer.py
+# shop/api/views/sale_bill_views.py
 
-from rest_framework import serializers
-from shop.models.sale_bill import SaleBill, SaleBillItem
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.db import transaction
+from django.utils import timezone
+
+from shop.models.sale_bill import SaleBill
+from shop.models.sale import Sale
 from shop.models import Product
-from customers.models import Customer
+from shop.api.serializers.sale_bill_serializer import SaleBillSerializer
 
 
-# Nested serializers
-class SimpleProductSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Product
-        fields = ['id', 'name', 'price']
+class SaleBillViewSet(viewsets.ModelViewSet):
+    queryset = SaleBill.objects.all()
+    serializer_class = SaleBillSerializer
+    permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        shop = self.request.user.shop_set.first()
+        if not shop:
+            return SaleBill.objects.none()
+        return SaleBill.objects.filter(shop=shop).order_by('-created_at')
 
-class SimpleCustomerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Customer
-        fields = ['id', 'name', 'phone_number', 'address']
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        """
+        SaleBill creation with:
+        - Safe stock deduction (only once)
+        - Sale entries for accurate online/offline reports
+        - Full atomic transaction (rollback if anything fails)
+        """
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-class SaleBillItemSerializer(serializers.ModelSerializer):
-    product_id = serializers.IntegerField(write_only=True)
-    product = SimpleProductSerializer(read_only=True)
-
-    class Meta:
-        model = SaleBillItem
-        fields = ['product_id', 'product', 'quantity', 'unit_price']
-
-
-class SaleBillSerializer(serializers.ModelSerializer):
-    items = SaleBillItemSerializer(many=True)
-    customer_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
-    customer = SimpleCustomerSerializer(read_only=True)  # ← List & detail mein include
-
-    class Meta:
-        model = SaleBill
-        fields = [
-            'id', 'bill_number', 'bill_date', 'customer_id', 'customer',
-            'subtotal', 'additional_charges', 'total_amount',
-            'payment_type', 'paid_amount', 'balance_due', 'items', 'created_at'
-        ]
-        read_only_fields = ['created_at']
-
-    def validate(self, data):
-        items_data = data.get('items', [])
-        if not items_data:
-            raise serializers.ValidationError({"items": "At least one item is required."})
-
-        for item in items_data:
-            product_id = item.get('product_id')
-            quantity = item.get('quantity', 0)
-
-            if not product_id:
-                raise serializers.ValidationError({"items": "product_id is required for each item."})
-            if quantity <= 0:
-                raise serializers.ValidationError({"items": "Quantity must be greater than 0."})
-
-            try:
-                product = Product.objects.get(id=product_id)
-            except Product.DoesNotExist:
-                raise serializers.ValidationError({"items": f"Product with id {product_id} not found."})
-
-            if product.stock_quantity < quantity:
-                raise serializers.ValidationError({
-                    "items": f"Insufficient stock for {product.name}. Available: {product.stock_quantity}, Requested: {quantity}"
-                })
-
-        return data
-
-    def create(self, validated_data):
-        items_data = validated_data.pop('items')
-        customer_id = validated_data.pop('customer_id', None)
-        shop = validated_data.pop('shop')
-
-        customer = None
-        if customer_id:
-            try:
-                customer = Customer.objects.get(id=customer_id)
-            except Customer.DoesNotExist:
-                raise serializers.ValidationError("Invalid customer_id")
-
-        sale_bill = SaleBill.objects.create(
-            shop=shop,
-            customer=customer,
-            **validated_data
-        )
-
-        for item_data in items_data:
-            product_id = item_data.pop('product_id')
-            product = Product.objects.get(id=product_id)
-            SaleBillItem.objects.create(
-                sale_bill=sale_bill,
-                product=product,
-                **item_data
+        shop = self.request.user.shop_set.first()
+        if not shop:
+            return Response(
+                {"error": "No shop found for this user"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        return sale_bill
+        # Case-insensitive payment type handling
+        payment_type_raw = request.data.get('payment_type', 'CASH').strip().upper()
+        ONLINE_PAYMENT_TYPES = {
+            'ONLINE', 'UPI', 'CARD', 'GPAY', 'PHONEPE', 'PAYTM', 'NETBANKING'
+        }
+        is_online = payment_type_raw in ONLINE_PAYMENT_TYPES
+        is_credit = payment_type_raw == 'UNPAID'
 
-    def to_representation(self, instance):
-        ret = super().to_representation(instance)
-        
-        # List view mein bhi nested customer & items force populate
-        if 'items' not in ret or not ret['items']:
-            ret['items'] = SaleBillItemSerializer(
-                instance.items.select_related('product').all(),
-                many=True
-            ).data
+        # Create SaleBill + Items via serializer (stock NOT updated yet)
+        sale_bill = serializer.save(shop=shop)
 
-        if instance.customer and ('customer' not in ret or not ret['customer']):
-            ret['customer'] = SimpleCustomerSerializer(instance.customer).data
+        # SINGLE PLACE: Update stock + Create Sale entries
+        for item in sale_bill.items.all():
+            product = item.product
 
-        return ret
+            # Final stock check & deduction (only here!)
+            if product.stock_quantity < item.quantity:
+                raise Exception(f"Insufficient stock for {product.name}")
+                
+            # Create Sale record for reporting (online/offline tracking)
+            Sale.objects.create(
+                shop=shop,
+                product=product,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                total_amount=item.quantity * item.unit_price,
+                is_online=is_online,
+                is_credit=is_credit,
+                customer=sale_bill.customer,
+                sale_date=sale_bill.bill_date or timezone.now(),
+            )
+
+        # Success response
+        response_data = serializer.data
+        response_data['message'] = 'Sale bill created successfully'
+        response_data['is_online'] = is_online
+
+        if hasattr(sale_bill, 'bill_number'):
+            response_data['bill_number'] = sale_bill.bill_number
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='items')
+    def get_items(self, request, pk=None):
+        """
+        Get all items of a SaleBill (used for Sale Return)
+        Example: GET /api/sales/bills/10/items/
+        """
+        try:
+            bill = self.get_object()
+        except Exception:
+            return Response(
+                {"error": "Sale Bill not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        items = bill.items.all()
+        data = [
+            {
+                "product_id": item.product.id,
+                "product_name": item.product.name,
+                "quantity": item.quantity,
+                "unit_price": float(item.unit_price),
+                "total": float(item.quantity * item.unit_price),
+            }
+            for item in items
+        ]
+        return Response(data, status=status.HTTP_200_OK)

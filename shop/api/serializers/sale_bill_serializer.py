@@ -6,7 +6,7 @@ from shop.models import Product
 from customers.models import Customer
 
 
-# Nested serializers for display only
+# Nested serializers
 class SimpleProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
@@ -31,7 +31,7 @@ class SaleBillItemSerializer(serializers.ModelSerializer):
 class SaleBillSerializer(serializers.ModelSerializer):
     items = SaleBillItemSerializer(many=True)
     customer_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
-    customer = SimpleCustomerSerializer(read_only=True)
+    customer = SimpleCustomerSerializer(read_only=True)  # ← List & detail mein include
 
     class Meta:
         model = SaleBill
@@ -43,9 +43,6 @@ class SaleBillSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at']
 
     def validate(self, data):
-        """
-        Full validation at parent level - safe access to quantity & product_id
-        """
         items_data = data.get('items', [])
         if not items_data:
             raise serializers.ValidationError({"items": "At least one item is required."})
@@ -56,7 +53,6 @@ class SaleBillSerializer(serializers.ModelSerializer):
 
             if not product_id:
                 raise serializers.ValidationError({"items": "product_id is required for each item."})
-
             if quantity <= 0:
                 raise serializers.ValidationError({"items": "Quantity must be greater than 0."})
 
@@ -84,14 +80,12 @@ class SaleBillSerializer(serializers.ModelSerializer):
             except Customer.DoesNotExist:
                 raise serializers.ValidationError("Invalid customer_id")
 
-        # Create SaleBill
         sale_bill = SaleBill.objects.create(
             shop=shop,
             customer=customer,
             **validated_data
         )
 
-        # Create items
         for item_data in items_data:
             product_id = item_data.pop('product_id')
             product = Product.objects.get(id=product_id)
@@ -106,15 +100,14 @@ class SaleBillSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         ret = super().to_representation(instance)
         
-        # Ensure items are populated in list view
-        if not ret.get('items'):
+        # List view mein bhi nested customer & items force populate
+        if 'items' not in ret or not ret['items']:
             ret['items'] = SaleBillItemSerializer(
                 instance.items.select_related('product').all(),
                 many=True
             ).data
 
-        # Ensure customer is populated
-        if instance.customer and not ret.get('customer'):
+        if instance.customer and ('customer' not in ret or not ret['customer']):
             ret['customer'] = SimpleCustomerSerializer(instance.customer).data
 
         return ret
