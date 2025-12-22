@@ -31,9 +31,10 @@ def my_current_shop(request):
     """
     GET /api/shops/my-shop/
     Returns current shop details for the authenticated user.
-    Used by Flutter app to display shop card even when no orders exist.
+    Used by Flutter app to display owner name, phone, logo etc. in Business Profile.
     """
     shop = Shop.objects.filter(owner=request.user).first()
+    
     if not shop:
         return Response(
             {
@@ -47,9 +48,15 @@ def my_current_shop(request):
         "shop_id": shop.id,
         "name": shop.name,
         "slug": shop.slug,
-        "logo": shop.logo.url if shop.logo else None,
-        "banner": shop.banner.url if shop.banner else None,
+        "address": shop.address or "",
+        "description": shop.description or "",
+        "logo": shop.logo if shop.logo else None,          # Fixed: no .url
+        "banner": shop.banner if shop.banner else None,    # Fixed: no .url
         "is_live": shop.is_live,
+        "owner_name": request.user.username,               # For Business Profile
+        "owner_phone": request.user.phone_number or "",    # Registered Number
+        "created_at": shop.created_at.isoformat(),
+        "updated_at": shop.updated_at.isoformat(),
     })
 
 
