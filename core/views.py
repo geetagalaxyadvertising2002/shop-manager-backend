@@ -26,8 +26,12 @@ class RegisterView(APIView):
                 return Response({'error': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
             user = serializer.save()
-            Profile.objects.create(user=use
-            r, phone_number=request.data.get('phone_number', ''))
+
+            Profile.objects.create(
+             user=user,
+             phone_number=request.data.get('phone_number', '')
+           )
+
             token, _ = Token.objects.get_or_create(user=user)
 
             logger.info(f"User registered: {user.username}")
