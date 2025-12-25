@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from core.views import run_makemigrations, run_migrate, HealthCheckView
+from core.views import run_makemigrations, run_migrate HealthCheckView
 
 # Optional: keep alias import for reports (not required but clean)
 from reports import urls as report_urls
