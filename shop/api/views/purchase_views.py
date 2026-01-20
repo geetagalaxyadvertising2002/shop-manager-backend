@@ -1,4 +1,5 @@
-import logging, random
+import logging
+import random
 from datetime import datetime
 from django.utils import timezone
 from rest_framework import viewsets, status
@@ -11,6 +12,25 @@ from core.core_models import Shop
 from customers.models import Customer
 from shop.api.serializers.purchase_serializer import PurchaseSerializer
 
+# You will most likely need this serializer too
+from rest_framework import serializers
+
+
+class InvoiceItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_id = serializers.IntegerField(source='product.id', read_only=True)
+
+    class Meta:
+        model = InvoiceItem
+        fields = [
+            'id',
+            'product_id',
+            'product_name',
+            'quantity',
+            'unit_price',
+        ]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,6 +39,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
     ✅ Handles Purchase creation, stock update (increase), invoice generation.
     """
     serializer_class = PurchaseSerializer
+    queryset = Purchase.objects.none()  # will be overridden in get_queryset
 
     def get_queryset(self):
         """Return all purchases for the logged-in user's shop"""
@@ -46,7 +67,6 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Validate data
             data = request.data
             supplier_id = data.get("supplier_id")
             items = data.get("items", [])
@@ -83,7 +103,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 shop=shop,
                 invoice_number=invoice_number,
                 total_amount=total_amount,
-                is_online=True if payment_type.lower() == "online" else False,
+                is_online=payment_type.lower() == "online",
                 customer_name=getattr(supplier, "name", "Unknown Supplier"),
                 customer_phone=getattr(supplier, "phone_number", None),
                 note=f"Purchase via {payment_type}",
@@ -96,7 +116,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 quantity = int(item["quantity"])
                 unit_price = float(item["unit_price"])
 
-                # ✅ Increase stock
+                # Increase stock
                 product.stock_quantity += quantity
                 product.save()
 
@@ -118,7 +138,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                     "total_amount": purchase.total_amount,
                     "supplier": getattr(supplier, "name", None),
                     "created_at": purchase.created_at.strftime("%Y-%m-%d %H:%M"),
-                    "payment_type": purchase.payment_type,  # ← ADD THIS
+                    "payment_type": purchase.payment_type,
                 },
                 "message": "Purchase added successfully and stock updated."
             }, status=201)
@@ -149,3 +169,39 @@ class PurchaseViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error("Failed to get purchase summary", exc_info=True)
             return Response({"error": str(e)}, status=500)
+
+    @action(detail=True, methods=['get'], url_path='items')
+    def items(self, request, pk=None):
+        """
+        Return list of items (products) in this purchase
+        Endpoint: GET /api/purchases/<id>/items/
+        """
+        try:
+            purchase = self.get_object()
+
+            # Most common pattern: items are stored in Invoice → InvoiceItem
+            invoice_items = InvoiceItem.objects.filter(
+                invoice__purchase=purchase
+            ).select_related('product')
+
+            if not invoice_items.exists():
+                # Fallback: if somehow no invoice was created (rare)
+                return Response({
+                    "items": [],
+                    "message": "No items found for this purchase"
+                }, status=200)
+
+            serializer = InvoiceItemSerializer(invoice_items, many=True)
+
+            return Response({
+                "items": serializer.data,
+                "purchase_id": purchase.id,
+                "invoice_number": purchase.invoice_number,
+                "total_items": len(serializer.data)
+            })
+
+        except Purchase.DoesNotExist:
+            return Response({"error": "Purchase not found"}, status=404)
+        except Exception as e:
+            logger.error(f"Error fetching purchase items: {str(e)}", exc_info=True)
+            return Response({"error": "Failed to load purchase items"}, status=500)
