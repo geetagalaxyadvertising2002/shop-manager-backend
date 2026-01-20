@@ -38,7 +38,6 @@ class PurchaseViewSet(viewsets.ModelViewSet):
     queryset = Purchase.objects.none()  # overridden in get_queryset
 
     def get_queryset(self):
-        """Return all purchases for the logged-in user's shop"""
         try:
             shop = Shop.objects.filter(owner=self.request.user).first()
             if not shop:
@@ -50,37 +49,72 @@ class PurchaseViewSet(viewsets.ModelViewSet):
             return Purchase.objects.none()
 
     def create(self, request, *args, **kwargs):
-        """
-        Create Purchase → Increase product stock → Create Invoice + Invoice Items
-        """
         try:
             shop = Shop.objects.filter(owner=request.user).first()
             if not shop:
-                return Response(
-                    {"error": "No shop associated with this user."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": "No shop associated with this user."}, status=400)
 
             data = request.data
+            logger.info(f"Purchase create request data: {data}")
+
             supplier_id = data.get("supplier_id")
             items = data.get("items", [])
+
+            if not items:
+                logger.warning("No items provided in purchase creation")
+                return Response({"error": "No items provided. 'items' array is required and cannot be empty."}, status=400)
+
             note = data.get("note", "")
             payment_type = data.get("payment_type", "Cash")
 
-            if not items:
-                return Response({"error": "No items provided"}, status=400)
-
             supplier = Customer.objects.filter(id=supplier_id).first() if supplier_id else None
 
-            # Calculate total amount
+            # Calculate total & validate items
             total_amount = 0.0
-            for item in items:
-                product = Product.objects.filter(id=item["product_id"], shop=shop).first()
-                if not product:
-                    return Response({"error": f"Product {item.get('product_id')} not found"}, status=404)
-                total_amount += float(item["unit_price"]) * int(item["quantity"])
+            validated_items = []
 
-            # Create Purchase record
+            for idx, item in enumerate(items, 1):
+                try:
+                    product_id = item.get("product_id")
+                    quantity = item.get("quantity")
+                    unit_price = item.get("unit_price")
+
+                    if not all([product_id, quantity, unit_price]):
+                        return Response({
+                            "error": f"Item #{idx} missing required fields (product_id, quantity, unit_price)"
+                        }, status=400)
+
+                    product = Product.objects.filter(id=product_id, shop=shop).first()
+                    if not product:
+                        return Response({
+                            "error": f"Product {product_id} not found in shop"
+                        }, status=404)
+
+                    qty = int(quantity)
+                    price = float(unit_price)
+
+                    if qty <= 0:
+                        return Response({"error": f"Quantity must be positive (item #{idx})"}, status=400)
+
+                    subtotal = qty * price
+                    total_amount += subtotal
+
+                    validated_items.append({
+                        "product": product,
+                        "quantity": qty,
+                        "unit_price": price
+                    })
+
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Invalid data in item #{idx}: {item} → {str(e)}")
+                    return Response({
+                        "error": f"Invalid quantity or unit_price in item #{idx}"
+                    }, status=400)
+
+            if not validated_items:
+                return Response({"error": "No valid items after validation"}, status=400)
+
+            # Create Purchase
             invoice_number = f"PUR-{random.randint(10000, 99999)}"
             purchase = Purchase.objects.create(
                 shop=shop,
@@ -92,7 +126,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 received=True
             )
 
-            # Create Invoice for record keeping
+            # Create Invoice
             invoice = Invoice.objects.create(
                 shop=shop,
                 invoice_number=invoice_number,
@@ -104,25 +138,20 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 created_at=timezone.now()
             )
 
-            # Process Items
-            for item in items:
-                product = Product.objects.filter(id=item["product_id"], shop=shop).first()
-                quantity = int(item["quantity"])
-                unit_price = float(item["unit_price"])
-
-                # Increase stock
-                product.stock_quantity += quantity
-                product.save()
-
-                # Create invoice item
+            # Create Invoice Items + Update stock
+            created_items_count = 0
+            for vi in validated_items:
                 InvoiceItem.objects.create(
                     invoice=invoice,
-                    product=product,
-                    quantity=quantity,
-                    unit_price=unit_price
+                    product=vi["product"],
+                    quantity=vi["quantity"],
+                    unit_price=vi["unit_price"]
                 )
+                vi["product"].stock_quantity += vi["quantity"]
+                vi["product"].save()
+                created_items_count += 1
 
-            logger.info(f"Purchase created successfully for shop {shop.name}")
+            logger.info(f"Purchase {purchase.id} created with {created_items_count} items")
 
             return Response({
                 "status": "success",
@@ -133,17 +162,17 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                     "supplier": getattr(supplier, "name", None),
                     "created_at": purchase.created_at.strftime("%Y-%m-%d %H:%M"),
                     "payment_type": purchase.payment_type,
+                    "item_count": created_items_count
                 },
                 "message": "Purchase added successfully and stock updated."
             }, status=201)
 
         except Exception as e:
-            logger.error("Error creating purchase", exc_info=True)
+            logger.exception("Critical error during purchase creation")
             return Response({"error": str(e)}, status=500)
 
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
-        """Return daily purchase summary"""
         try:
             shop = Shop.objects.filter(owner=request.user).first()
             if not shop:
@@ -157,7 +186,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
 
             return Response({
                 "date": today.strftime("%d %b %Y"),
-                "total_purchases": total_purchases,
+                "total_purchases": total_amount,
                 "purchase_count": count
             })
         except Exception as e:
@@ -166,14 +195,9 @@ class PurchaseViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='items')
     def items(self, request, pk=None):
-        """
-        Return list of items (products) in this purchase
-        Endpoint: GET /api/purchases/<id>/items/
-        """
         try:
             purchase = self.get_object()
 
-            # Using invoice_number to match (because no direct FK from Invoice → Purchase)
             invoice_items = InvoiceItem.objects.filter(
                 invoice__invoice_number=purchase.invoice_number
             ).select_related('product')
