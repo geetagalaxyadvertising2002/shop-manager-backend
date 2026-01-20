@@ -1,10 +1,10 @@
 import logging
 import random
-from datetime import datetime
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework import serializers
 
 from shop.models.purchase_models import Purchase
 from shop.models import Product, Invoice, InvoiceItem
@@ -12,8 +12,7 @@ from core.core_models import Shop
 from customers.models import Customer
 from shop.api.serializers.purchase_serializer import PurchaseSerializer
 
-# You will most likely need this serializer too
-from rest_framework import serializers
+logger = logging.getLogger(__name__)
 
 
 class InvoiceItemSerializer(serializers.ModelSerializer):
@@ -31,15 +30,12 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         ]
 
 
-logger = logging.getLogger(__name__)
-
-
 class PurchaseViewSet(viewsets.ModelViewSet):
     """
-    ✅ Handles Purchase creation, stock update (increase), invoice generation.
+    Handles Purchase creation, stock update (increase), invoice generation.
     """
     serializer_class = PurchaseSerializer
-    queryset = Purchase.objects.none()  # will be overridden in get_queryset
+    queryset = Purchase.objects.none()  # overridden in get_queryset
 
     def get_queryset(self):
         """Return all purchases for the logged-in user's shop"""
@@ -55,9 +51,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """
-        ✅ Create Purchase
-        ✅ Increase product stock
-        ✅ Create Invoice + Invoice Items
+        Create Purchase → Increase product stock → Create Invoice + Invoice Items
         """
         try:
             shop = Shop.objects.filter(owner=request.user).first()
@@ -79,11 +73,11 @@ class PurchaseViewSet(viewsets.ModelViewSet):
             supplier = Customer.objects.filter(id=supplier_id).first() if supplier_id else None
 
             # Calculate total amount
-            total_amount = 0
+            total_amount = 0.0
             for item in items:
                 product = Product.objects.filter(id=item["product_id"], shop=shop).first()
                 if not product:
-                    return Response({"error": f"Product {item['product_id']} not found"}, status=404)
+                    return Response({"error": f"Product {item.get('product_id')} not found"}, status=404)
                 total_amount += float(item["unit_price"]) * int(item["quantity"])
 
             # Create Purchase record
@@ -144,7 +138,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
             }, status=201)
 
         except Exception as e:
-            logger.error("Error creating purchase:", exc_info=True)
+            logger.error("Error creating purchase", exc_info=True)
             return Response({"error": str(e)}, status=500)
 
     @action(detail=False, methods=['get'], url_path='summary')
@@ -179,17 +173,10 @@ class PurchaseViewSet(viewsets.ModelViewSet):
         try:
             purchase = self.get_object()
 
-            # Most common pattern: items are stored in Invoice → InvoiceItem
+            # Using invoice_number to match (because no direct FK from Invoice → Purchase)
             invoice_items = InvoiceItem.objects.filter(
-                invoice__purchase=purchase
+                invoice__invoice_number=purchase.invoice_number
             ).select_related('product')
-
-            if not invoice_items.exists():
-                # Fallback: if somehow no invoice was created (rare)
-                return Response({
-                    "items": [],
-                    "message": "No items found for this purchase"
-                }, status=200)
 
             serializer = InvoiceItemSerializer(invoice_items, many=True)
 
@@ -197,7 +184,8 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 "items": serializer.data,
                 "purchase_id": purchase.id,
                 "invoice_number": purchase.invoice_number,
-                "total_items": len(serializer.data)
+                "total_items": invoice_items.count(),
+                "message": "Items fetched successfully" if invoice_items.exists() else "No items found for this purchase"
             })
 
         except Purchase.DoesNotExist:
