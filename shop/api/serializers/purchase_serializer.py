@@ -34,6 +34,7 @@ class PurchaseSerializer(serializers.ModelSerializer):
             'id',
             'shop',
             'supplier',
+            'invoice_id',
             'supplier_id',
             'invoice_number',
             'total_amount',

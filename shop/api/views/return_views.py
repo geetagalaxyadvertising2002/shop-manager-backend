@@ -20,69 +20,97 @@ logger = logging.getLogger(__name__)
 # ============================================================
 class PurchaseReturnViewSet(viewsets.ModelViewSet):
     """
-    ✅ Handles returns to supplier (stock decreases)
+    ✅ Handles purchase returns to supplier
+    ✅ Stock decreases
+    ✅ Return allowed only for items actually purchased
     """
+
     serializer_class = PurchaseReturnSerializer
 
     def get_queryset(self):
-        """Return all purchase returns for the logged-in user's shop"""
         try:
             shop = Shop.objects.filter(owner=self.request.user).first()
             if not shop:
                 return PurchaseReturn.objects.none()
+
             return PurchaseReturn.objects.filter(
                 purchase__shop=shop
-            ).order_by('-created_at')
+            ).order_by("-created_at")
+
         except Exception as e:
-            logger.error(f"Error fetching purchase returns: {str(e)}", exc_info=True)
+            logger.error("Error fetching purchase returns", exc_info=True)
             return PurchaseReturn.objects.none()
 
     def create(self, request, *args, **kwargs):
-        """
-        ✅ Create Purchase Return
-        ✅ Reduce product stock
-        ✅ Create return invoice
-        """
         try:
             shop = Shop.objects.filter(owner=request.user).first()
             if not shop:
                 return Response({"error": "Shop not found"}, status=404)
 
             data = request.data
+
             purchase_id = data.get("purchase_id")
             product_id = data.get("product_id")
             quantity = data.get("quantity")
             reason = data.get("reason", "")
 
-            # ✅ Validation
+            # ===================== VALIDATION =====================
+
             if not all([purchase_id, product_id, quantity]):
-                return Response({"error": "Missing required fields"}, status=400)
+                return Response(
+                    {"error": "purchase_id, product_id and quantity are required"},
+                    status=400
+                )
 
             try:
                 quantity = int(quantity)
                 if quantity <= 0:
-                    return Response({"error": "Quantity must be positive"}, status=400)
+                    return Response({"error": "Quantity must be greater than zero"}, status=400)
             except ValueError:
                 return Response({"error": "Invalid quantity"}, status=400)
 
-            purchase = Purchase.objects.filter(id=purchase_id, shop=shop).first()
+            # ===================== PURCHASE =====================
+
+            purchase = Purchase.objects.filter(
+                id=purchase_id,
+                shop=shop
+            ).first()
+
             if not purchase:
                 return Response({"error": "Purchase not found"}, status=404)
 
-            product = Product.objects.filter(id=product_id, shop=shop).first()
-            if not product:
-                return Response({"error": "Product not found"}, status=404)
+            # ===================== CHECK PURCHASE ITEM =====================
 
-            # ✅ Reduce stock safely
+            invoice_item = InvoiceItem.objects.filter(
+                invoice=purchase.invoice,
+                product_id=product_id
+            ).select_related("product").first()
+
+            if not invoice_item:
+                return Response(
+                    {"error": "This product was not part of this purchase"},
+                    status=400
+                )
+
+            product = invoice_item.product
+
+            # ===================== STOCK VALIDATION =====================
+
             if product.stock_quantity < quantity:
-                return Response({
-                    "error": f"Cannot return {quantity}. Only {product.stock_quantity} left in stock."
-                }, status=400)
+                return Response(
+                    {
+                        "error": f"Cannot return {quantity}. Only {product.stock_quantity} items in stock."
+                    },
+                    status=400
+                )
+
+            # ===================== UPDATE STOCK =====================
 
             product.stock_quantity -= quantity
             product.save()
 
-            # ✅ Create return record
+            # ===================== CREATE RETURN RECORD =====================
+
             return_record = PurchaseReturn.objects.create(
                 purchase=purchase,
                 product=product,
@@ -90,9 +118,10 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
                 reason=reason
             )
 
-            # ✅ Create Return Invoice
+            # ===================== CREATE RETURN INVOICE =====================
+
             invoice_number = f"PUR-RET-{random.randint(10000, 99999)}"
-            total_amount = float(product.price) * quantity
+            total_amount = float(invoice_item.unit_price) * quantity
 
             invoice = Invoice.objects.create(
                 shop=shop,
@@ -109,23 +138,29 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
                 invoice=invoice,
                 product=product,
                 quantity=quantity,
-                unit_price=product.price
+                unit_price=invoice_item.unit_price
             )
 
-            return Response({
-                "status": "success",
-                "return": {
-                    "id": return_record.id,
-                    "invoice_number": invoice.invoice_number,
-                    "product": product.name,
-                    "quantity": quantity,
-                    "total_amount": total_amount
+            # ===================== RESPONSE =====================
+
+            return Response(
+                {
+                    "status": "success",
+                    "message": "Purchase return created successfully",
+                    "return": {
+                        "id": return_record.id,
+                        "purchase_id": purchase.id,
+                        "product": product.name,
+                        "quantity": quantity,
+                        "total_amount": total_amount,
+                        "invoice_number": invoice.invoice_number,
+                    }
                 },
-                "message": "Purchase return created successfully and stock updated."
-            }, status=201)
+                status=201
+            )
 
         except Exception as e:
-            logger.error("Error creating purchase return:", exc_info=True)
+            logger.error("Purchase return error", exc_info=True)
             return Response({"error": str(e)}, status=500)
 
 
