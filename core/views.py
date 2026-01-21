@@ -339,3 +339,36 @@ class VerifyOTPView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+        
+class UserProfileUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user_data = UserSerializer(request.user).data
+        profile = Profile.objects.filter(user=request.user).first()
+        profile_data = ProfileSerializer(profile).data if profile else {}
+        return Response({
+            "user": user_data,
+            "profile": profile_data
+        })
+
+    def put(self, request):
+        user = request.user
+        profile = Profile.objects.filter(user=user).first()
+
+        # Username aur phone number user model se update kar rahe hain
+        user_serializer = UserSerializer(user, data=request.data, partial=True)
+        if not user_serializer.is_valid():
+            return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Profile fields (agar phone number profile mein bhi rakh rahe ho)
+        profile_serializer = ProfileSerializer(profile, data=request.data, partial=True)
+        if profile_serializer.is_valid():
+            profile_serializer.save()
+        # else: ignore profile errors if not critical
+
+        user_serializer.save()  # username + phone_number save
+        return Response({
+            "message": "Profile updated successfully",
+            "user": UserSerializer(user).data
+        }, status=status.HTTP_200_OK)
