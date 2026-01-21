@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # ✅ PURCHASE RETURN VIEWSET
 # ============================================================
+
 class PurchaseReturnViewSet(viewsets.ModelViewSet):
     """
     ✅ Handles purchase returns to supplier
@@ -25,7 +26,14 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
     ✅ Return allowed only for items actually purchased
     """
 
-    serializer_class = PurchaseReturnSerializer
+    def get_serializer_class(self):
+        """
+        Use different serializer for list (to include total_amount, invoice_number, etc.)
+        Use the original for create/update/retrieve
+        """
+        if self.action == 'list':
+            return PurchaseReturnListSerializer
+        return PurchaseReturnSerializer
 
     def get_queryset(self):
         try:
@@ -35,6 +43,11 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
 
             return PurchaseReturn.objects.filter(
                 purchase__shop=shop
+            ).select_related(
+                'purchase',
+                'purchase__invoice',
+                'purchase__supplier',
+                'product'
             ).order_by("-created_at")
 
         except Exception as e:
@@ -74,7 +87,7 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
             purchase = Purchase.objects.filter(
                 id=purchase_id,
                 shop=shop
-            ).first()
+            ).select_related('invoice', 'supplier').first()
 
             if not purchase:
                 return Response({"error": "Purchase not found"}, status=404)
@@ -107,7 +120,7 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
             # ===================== UPDATE STOCK =====================
 
             product.stock_quantity -= quantity
-            product.save()
+            product.save(update_fields=['stock_quantity'])
 
             # ===================== CREATE RETURN RECORD =====================
 
@@ -120,8 +133,8 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
 
             # ===================== CREATE RETURN INVOICE =====================
 
-            invoice_number = f"PUR-RET-{random.randint(10000, 99999)}"
-            total_amount = float(invoice_item.unit_price) * quantity
+            invoice_number = f"PUR-RET-{random.randint(100000, 999999)}"
+            total_amount = Decimal(str(invoice_item.unit_price)) * Decimal(quantity)
 
             invoice = Invoice.objects.create(
                 shop=shop,
@@ -141,7 +154,7 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
                 unit_price=invoice_item.unit_price
             )
 
-            # ===================== RESPONSE =====================
+            # ===================== RESPONSE (for create) =====================
 
             return Response(
                 {
@@ -152,15 +165,16 @@ class PurchaseReturnViewSet(viewsets.ModelViewSet):
                         "purchase_id": purchase.id,
                         "product": product.name,
                         "quantity": quantity,
-                        "total_amount": total_amount,
+                        "total_amount": float(total_amount),
                         "invoice_number": invoice.invoice_number,
+                        "created_at": timezone.localtime(return_record.created_at).isoformat(),
                     }
                 },
                 status=201
             )
 
         except Exception as e:
-            logger.error("Purchase return error", exc_info=True)
+            logger.error("Purchase return creation error", exc_info=True)
             return Response({"error": str(e)}, status=500)
 
 
