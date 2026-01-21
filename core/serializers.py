@@ -36,3 +36,10 @@ class ShopSerializer(serializers.ModelSerializer):
             'id', 'name', 'slug', 'address', 'description', 'logo', 'banner',
             'is_live', 'owner_name', 'created_at', 'updated_at'
         ]
+
+class OTPRequestSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=15, required=True)
+
+class OTPVerifySerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=15, required=True)
+    otp = serializers.CharField(max_length=6, required=True)

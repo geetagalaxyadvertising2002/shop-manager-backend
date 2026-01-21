@@ -6,10 +6,11 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.authtoken.models import Token
 from django.db import IntegrityError
-from core.core_models import User, Profile, Shop
+from core.core_models import User, Profile, Shop, OTPCode
+from .utils import generate_otp, send_otp_sms
 from django.http import JsonResponse
 from django.core.management import call_command
-from .serializers import UserSerializer, ProfileSerializer, ShopSerializer
+from .serializers import UserSerializer, ProfileSerializer, ShopSerializer, OTPRequestSerializer, OTPVerifySerializer
 
 logger = logging.getLogger(__name__)
 
@@ -244,3 +245,113 @@ class HealthCheckView(APIView):
             "status": "ok",
             "message": "Server is healthy 🚀"
         }, status=status.HTTP_200_OK)
+
+class SendOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = OTPRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        phone = serializer.validated_data['phone_number']
+
+        # Try to find existing user
+        user = User.objects.filter(phone_number=phone).first()
+
+        # If new user → we will create later on verification
+        # If existing → we just send OTP
+
+        otp = generate_otp()
+        OTPCode.objects.filter(phone=phone, is_used=False).update(is_used=True)  # invalidate old
+
+        with transaction.atomic():
+            OTPCode.objects.create(
+                user=user if user else None,
+                phone=phone,
+                code=otp
+            )
+
+        send_otp_sms(phone, otp)  # console for now
+
+        return Response({
+            "message": "OTP sent successfully",
+            "phone": phone
+        }, status=200)
+
+
+# ────────────────────────────────────────────────
+# 2. Verify OTP → Register OR Login
+# ────────────────────────────────────────────────
+class VerifyOTPView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = OTPVerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        phone = serializer.validated_data['phone_number']
+        otp_input = serializer.validated_data['otp']
+
+        otp_record = OTPCode.objects.filter(
+            phone=phone,
+            code=otp_input,
+            is_used=False
+        ).order_by('-created_at').first()
+
+        if not otp_record or not otp_record.is_valid:
+            return Response({"error": "Invalid or expired OTP"}, status=400)
+
+        otp_record.is_used = True
+        otp_record.save()
+
+        # ─── Login case ───
+        user = User.objects.filter(phone_number=phone).first()
+
+        if user:
+            token, _ = Token.objects.get_or_create(user=user)
+            return Response({
+                "token": token.key,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "phone_number": user.phone_number,
+                },
+                "message": "Login successful"
+            }, status=200)
+
+        # ─── New registration case ───
+        # Create username from phone (you can improve this)
+        username = f"user_{phone[-8:]}"
+
+        if User.objects.filter(username=username).exists():
+            username += f"_{random.randint(100,999)}"
+
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    username=username,
+                    phone_number=phone,
+                    password=None  # no password
+                )
+
+                Profile.objects.create(
+                    user=user,
+                    phone_number=phone
+                )
+
+                token, _ = Token.objects.get_or_create(user=user)
+
+            return Response({
+                "token": token.key,
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "phone_number": user.phone_number,
+                },
+                "message": "Registration successful"
+            }, status=201)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
