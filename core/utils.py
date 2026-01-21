@@ -1,4 +1,5 @@
 # core/utils.py
+import random
 from brevo_python import Configuration, TransactionalEmailsApi, SendSmtpEmail, SendSmtpEmailSender, SendSmtpEmailTo
 from brevo_python.api_client import ApiClient
 from django.conf import settings
