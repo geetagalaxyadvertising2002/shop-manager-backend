@@ -156,6 +156,7 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = 'geetagalaxyadvertising2002@gmail.com'   # Brevo में verified होना चाहिए
 SERVER_EMAIL = 'geetagalaxyadvertising2002@gmail.com'
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
 # =============================
 # Celery
