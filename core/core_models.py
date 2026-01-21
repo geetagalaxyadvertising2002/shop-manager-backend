@@ -41,30 +41,13 @@ class Shop(models.Model):
 # core/core_models.py
 
 class OTPCode(models.Model):
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='otp_codes',      # ← this is correct
-        null=True,                     # important if OTP can be sent before user exists
-        blank=True
-    )
-    phone = models.CharField(max_length=15)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='otp_codes', null=True, blank=True)
+    # phone = models.CharField(max_length=15)          ← हटाओ
+    email = models.EmailField(max_length=255)          # ← नया
     code = models.CharField(max_length=6)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
 
-    def save(self, *args, **kwargs):
-        if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(minutes=10)
-        super().save(*args, **kwargs)
-
-    @property
-    def is_valid(self):
-        return not self.is_used and timezone.now() <= self.expires_at
-
-    class Meta:
-        ordering = ['-created_at']
-
     def __str__(self):
-        return f"{self.phone} — {self.code} ({'used' if self.is_used else 'valid'})"
+        return f"{self.email} — {self.code} ({'used' if self.is_used else 'valid'})"

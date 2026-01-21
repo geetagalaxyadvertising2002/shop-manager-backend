@@ -38,8 +38,8 @@ class ShopSerializer(serializers.ModelSerializer):
         ]
 
 class OTPRequestSerializer(serializers.Serializer):
-    phone_number = serializers.CharField(max_length=15, required=True)
+    email = serializers.EmailField(required=True)
 
 class OTPVerifySerializer(serializers.Serializer):
-    phone_number = serializers.CharField(max_length=15, required=True)
+    email = serializers.EmailField(required=True)
     otp = serializers.CharField(max_length=6, required=True)

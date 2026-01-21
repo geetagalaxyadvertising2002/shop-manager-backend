@@ -7,7 +7,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.authtoken.models import Token
 from django.db import IntegrityError
 from core.core_models import User, Profile, Shop, OTPCode
-from .utils import generate_otp, send_otp_sms
+from .utils import generate_otp, send_otp_email
 from django.http import JsonResponse
 from django.core.management import call_command
 from .serializers import UserSerializer, ProfileSerializer, ShopSerializer, OTPRequestSerializer, OTPVerifySerializer
@@ -246,43 +246,42 @@ class HealthCheckView(APIView):
             "message": "Server is healthy 🚀"
         }, status=status.HTTP_200_OK)
 
+# SendOTPView
 class SendOTPView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = OTPRequestSerializer(data=request.data)
+        # phone_number → email
+        serializer = OTPRequestSerializer(data=request.data)   # नीचे serializer भी बदलना है
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
 
-        phone = serializer.validated_data['phone_number']
+        email = serializer.validated_data['email']
 
-        # Try to find existing user
-        user = User.objects.filter(phone_number=phone).first()
-
-        # If new user → we will create later on verification
-        # If existing → we just send OTP
+        user = User.objects.filter(email=email).first()
 
         otp = generate_otp()
-        OTPCode.objects.filter(phone=phone, is_used=False).update(is_used=True)  # invalidate old
+        OTPCode.objects.filter(email=email, is_used=False).update(is_used=True)
 
         with transaction.atomic():
             OTPCode.objects.create(
                 user=user if user else None,
-                phone=phone,
+                email=email,           # ← phone हटाओ
                 code=otp
             )
 
-        send_otp_sms(phone, otp)  # console for now
+        success = send_otp_email(email, otp)
+
+        if not success:
+            return Response({"error": "Failed to send email"}, status=500)
 
         return Response({
-            "message": "OTP sent successfully",
-            "phone": phone
+            "message": "OTP sent successfully to your email",
+            "email": email
         }, status=200)
 
 
-# ────────────────────────────────────────────────
-# 2. Verify OTP → Register OR Login
-# ────────────────────────────────────────────────
+# VerifyOTPView
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
 
@@ -291,11 +290,11 @@ class VerifyOTPView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
 
-        phone = serializer.validated_data['phone_number']
+        email = serializer.validated_data['email']
         otp_input = serializer.validated_data['otp']
 
         otp_record = OTPCode.objects.filter(
-            phone=phone,
+            email=email,
             code=otp_input,
             is_used=False
         ).order_by('-created_at').first()
@@ -306,25 +305,19 @@ class VerifyOTPView(APIView):
         otp_record.is_used = True
         otp_record.save()
 
-        # ─── Login case ───
-        user = User.objects.filter(phone_number=phone).first()
+        user = User.objects.filter(email=email).first()
 
         if user:
+            # Login
             token, _ = Token.objects.get_or_create(user=user)
             return Response({
                 "token": token.key,
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "phone_number": user.phone_number,
-                },
+                "user": UserSerializer(user).data,
                 "message": "Login successful"
             }, status=200)
 
-        # ─── New registration case ───
-        # Create username from phone (you can improve this)
-        username = f"user_{phone[-8:]}"
-
+        # New user — registration
+        username = email.split('@')[0].lower()
         if User.objects.filter(username=username).exists():
             username += f"_{random.randint(100,999)}"
 
@@ -332,25 +325,16 @@ class VerifyOTPView(APIView):
             with transaction.atomic():
                 user = User.objects.create_user(
                     username=username,
-                    phone_number=phone,
-                    password=None  # no password
+                    email=email,
+                    password=None
                 )
-
-                Profile.objects.create(
-                    user=user,
-                    phone_number=phone
-                )
-
+                Profile.objects.create(user=user, email=email)
                 token, _ = Token.objects.get_or_create(user=user)
 
             return Response({
                 "token": token.key,
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "phone_number": user.phone_number,
-                },
-                "message": "Registration successful"
+                "user": UserSerializer(user).data,
+                "message": "Registration & Login successful"
             }, status=201)
 
         except Exception as e:
