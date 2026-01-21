@@ -8,7 +8,7 @@ from shop.models.purchase_models import PurchaseReturn, SaleReturn, Purchase
 from shop.models import Product, Invoice, InvoiceItem
 from shop.api.serializers.purchase_serializer import (
     PurchaseReturnSerializer,
-    SaleReturnSerializer
+    SaleReturnSerializer, PurchaseReturnListSerializer,
 )
 from core.core_models import Shop
 
