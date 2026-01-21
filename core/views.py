@@ -5,7 +5,7 @@ from rest_framework import status, viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.authtoken.models import Token
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from core.core_models import User, Profile, Shop, OTPCode
 from .utils import generate_otp, send_otp_email
 from django.http import JsonResponse
